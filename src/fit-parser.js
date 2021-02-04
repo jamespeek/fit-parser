@@ -52,6 +52,9 @@ export default class FitParser {
         }
       }
     }
+
+    const protocolVersion = blob[1];
+    const profileVersion = blob[2] + (blob[3] << 8);
     const dataLength = blob[4] + (blob[5] << 8) + (blob[6] << 16) + (blob[7] << 24);
     const crcStart = dataLength + headerLength;
     const crcFile = blob[crcStart] + (blob[crcStart + 1] << 8);
@@ -66,6 +69,9 @@ export default class FitParser {
     }
 
     const fitObj = {};
+    fitObj.protocolVersion = protocolVersion;
+    fitObj.profileVersion = profileVersion;
+
     const sessions = [];
     const laps = [];
     const records = [];
@@ -76,8 +82,16 @@ export default class FitParser {
     const fieldDescriptions = [];
     const dive_gases = [];
     const course_points = [];
+    const sports = [];
+    const monitors = [];
+    const stress = [];
+    const definitions = [];
+    const file_ids = [];
+    const monitor_info = [];
+    const lengths = [];
 
     let tempLaps = [];
+    let tempLengths = [];
     let tempRecords = [];
 
     let loopIndex = headerLength;
@@ -102,6 +116,8 @@ export default class FitParser {
             message.records = tempRecords;
             tempRecords = [];
             tempLaps.push(message);
+            message.lengths = tempLengths;
+            tempLengths = [];
           }
           laps.push(message);
           break;
@@ -121,6 +137,12 @@ export default class FitParser {
             }
           }
           events.push(message);
+          break;
+        case 'length':
+          if (isCascadeNeeded) {
+            tempLengths.push(message);
+          }
+          lengths.push(message);
           break;
         case 'hrv':
           hrv.push(message);
@@ -151,6 +173,31 @@ export default class FitParser {
         case 'course_point':
           course_points.push(message);
           break;
+        case 'sport':
+          sports.push(message);
+          break;
+        case 'file_id':
+          if(message){
+            file_ids.push(message);
+          }
+          break;
+        case 'definition':
+          if(message){
+            definitions.push(message);
+          }
+          break;
+        case 'monitoring':
+          monitors.push(message);
+          break;
+        case 'monitoring_info':
+          monitor_info.push(message);
+          break;
+        case 'stress_level':
+          stress.push(message);
+          break;
+        case 'software':
+          fitObj.software = message;
+          break;
         default:
           if (messageType !== '') {
             fitObj[messageType] = message;
@@ -164,10 +211,15 @@ export default class FitParser {
       fitObj.activity.sessions = sessions;
       fitObj.activity.events = events;
       fitObj.activity.hrv = hrv;
+      fitObj.activity.device_infos = devices;
+      fitObj.activity.developer_data_ids = applications;
+      fitObj.activity.field_descriptions = fieldDescriptions;
+      fitObj.activity.sports = sports;
     }
     if (!isModeCascade) {
       fitObj.sessions = sessions;
       fitObj.laps = laps;
+      fitObj.lengths = lengths;
       fitObj.records = records;
       fitObj.events = events;
       fitObj.device_infos = devices;
@@ -176,6 +228,13 @@ export default class FitParser {
       fitObj.hrv = hrv;
       fitObj.dive_gases = dive_gases;
       fitObj.course_points = course_points;
+      fitObj.sports = sports;
+      fitObj.devices = devices;
+      fitObj.monitors = monitors;
+      fitObj.stress = stress;
+      fitObj.file_ids = file_ids;
+      fitObj.monitor_info = monitor_info;
+      fitObj.definitions = definitions;
     }
 
     callback(null, fitObj);

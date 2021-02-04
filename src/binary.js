@@ -12,6 +12,14 @@ export function addEndian(littleEndian, bytes) {
     return result;
 }
 
+var timestamp = 0;
+var lastTimeOffset = 0;
+const CompressedTimeMask = 31;
+const CompressedLocalMesgNumMask = 0x60;
+const CompressedHeaderMask = 0x80;
+const GarminTimeOffset = 631065600000;
+let monitoring_timestamp = 0;
+
 function readData(blob, fDef, startIndex, options) {
     if (fDef.endianAbility === true) {
         const temp = [];
@@ -38,6 +46,12 @@ function readData(blob, fDef, startIndex, options) {
                     return dataView.getFloat32(0, fDef.littleEndian);
                 case 'float64':
                     return dataView.getFloat64(0, fDef.littleEndian);
+                case 'uint32_array':
+                    const array32 = [];
+                    for (let i = 0; i < fDef.size; i += 4) {
+                        array32.push(dataView.getUint32(i, fDef.littleEndian));
+                    }
+                    return array32;
                 case 'uint16_array':
                     const array = [];
                     for (let i = 0; i < fDef.size; i += 2) {
@@ -79,13 +93,15 @@ function formatByType(data, type, scale, offset) {
     switch (type) {
         case 'date_time':
         case 'local_date_time':
-            return new Date((data * 1000) + 631065600000);
+            return new Date((data * 1000) + GarminTimeOffset);
         case 'sint32':
             return data * FIT.scConst;
+        case 'uint8':
         case 'sint16':
         case 'uint32':
         case 'uint16':
             return scale ? data / scale + offset : data;
+        case 'uint32_array':
         case 'uint16_array':
             return data.map(dataItem => scale ? dataItem / scale + offset : dataItem);
         default:
@@ -209,9 +225,17 @@ function applyOptions(data, field, options) {
 
 export function readRecord(blob, messageTypes, developerFields, startIndex, options, startDate, pausedTime) {
     const recordHeader = blob[startIndex];
-    const localMessageType = recordHeader & 15;
+    let localMessageType = recordHeader & 15;
 
-    if ((recordHeader & 64) === 64) {
+    if((recordHeader & CompressedHeaderMask) === CompressedHeaderMask){
+        //compressed timestamp
+
+        var timeoffset = recordHeader & CompressedTimeMask;
+        timestamp += ((timeoffset - lastTimeOffset) & CompressedTimeMask);
+        lastTimeOffset = timeoffset;
+
+        localMessageType = ((recordHeader & CompressedLocalMesgNumMask) >> 5);
+    } else if ((recordHeader & 64) === 64) {
         // is definition message
         // startIndex + 1 is reserved
 
@@ -247,6 +271,7 @@ export function readRecord(blob, messageTypes, developerFields, startIndex, opti
             mTypeDef.fieldDefs.push(fDef);
         }
 
+        // numberOfDeveloperDataFields = 0 so it wont crash here and wont loop
         for (let i = 0; i < numberOfDeveloperDataFields; i++) {
             // If we fail to parse then try catch
             try {
@@ -341,6 +366,19 @@ export function readRecord(blob, messageTypes, developerFields, startIndex, opti
         developerFields[fields.developer_data_index][fields.field_definition_number] = fields;
     }
 
+    if (message.name === 'monitoring') {
+        //we need to keep the raw timestamp value so we can calculate subsequent timestamp16 fields
+        if(fields.timestamp){
+            monitoring_timestamp = fields.timestamp;
+            fields.timestamp = new Date(fields.timestamp * 1000 + GarminTimeOffset);
+        }
+        if(fields.timestamp16 && !fields.timestamp){
+            monitoring_timestamp += ( fields.timestamp16 - ( monitoring_timestamp & 0xFFFF ) ) & 0xFFFF;
+            //fields.timestamp = monitoring_timestamp;
+            fields.timestamp = new Date(monitoring_timestamp * 1000 + GarminTimeOffset);
+        }
+    }
+
     const result = {
         messageType: message.name,
         nextIndex: startIndex + messageSize + 1,
@@ -370,13 +408,13 @@ export function calculateCRC(blob, start, end) {
 
     let crc = 0;
     for (let i = start; i < end; i++) {
-        const byte = blob[i];
+        const byteVal = blob[i];
         let tmp = crcTable[crc & 0xF];
         crc = (crc >> 4) & 0x0FFF;
-        crc = crc ^ tmp ^ crcTable[byte & 0xF];
+        crc = crc ^ tmp ^ crcTable[byteVal & 0xF];
         tmp = crcTable[crc & 0xF];
         crc = (crc >> 4) & 0x0FFF;
-        crc = crc ^ tmp ^ crcTable[(byte >> 4) & 0xF];
+        crc = crc ^ tmp ^ crcTable[(byteVal >> 4) & 0xF];
     }
 
     return crc;

@@ -24,6 +24,14 @@ function addEndian(littleEndian, bytes) {
     return result;
 }
 
+var timestamp = 0;
+var lastTimeOffset = 0;
+var CompressedTimeMask = 31;
+var CompressedLocalMesgNumMask = 0x60;
+var CompressedHeaderMask = 0x80;
+var GarminTimeOffset = 631065600000;
+var monitoring_timestamp = 0;
+
 function readData(blob, fDef, startIndex, options) {
     if (fDef.endianAbility === true) {
         var temp = [];
@@ -50,10 +58,16 @@ function readData(blob, fDef, startIndex, options) {
                     return dataView.getFloat32(0, fDef.littleEndian);
                 case 'float64':
                     return dataView.getFloat64(0, fDef.littleEndian);
+                case 'uint32_array':
+                    var array32 = [];
+                    for (var _i = 0; _i < fDef.size; _i += 4) {
+                        array32.push(dataView.getUint32(_i, fDef.littleEndian));
+                    }
+                    return array32;
                 case 'uint16_array':
                     var array = [];
-                    for (var _i = 0; _i < fDef.size; _i += 2) {
-                        array.push(dataView.getUint16(_i, fDef.littleEndian));
+                    for (var _i2 = 0; _i2 < fDef.size; _i2 += 2) {
+                        array.push(dataView.getUint16(_i2, fDef.littleEndian));
                     }
                     return array;
             }
@@ -68,9 +82,9 @@ function readData(blob, fDef, startIndex, options) {
 
     if (fDef.type === 'string') {
         var _temp = [];
-        for (var _i2 = 0; _i2 < fDef.size; _i2++) {
-            if (blob[startIndex + _i2]) {
-                _temp.push(blob[startIndex + _i2]);
+        for (var _i3 = 0; _i3 < fDef.size; _i3++) {
+            if (blob[startIndex + _i3]) {
+                _temp.push(blob[startIndex + _i3]);
             }
         }
         return new _buffer.Buffer(_temp).toString('utf-8');
@@ -78,8 +92,8 @@ function readData(blob, fDef, startIndex, options) {
 
     if (fDef.type === 'byte_array') {
         var _temp2 = [];
-        for (var _i3 = 0; _i3 < fDef.size; _i3++) {
-            _temp2.push(blob[startIndex + _i3]);
+        for (var _i4 = 0; _i4 < fDef.size; _i4++) {
+            _temp2.push(blob[startIndex + _i4]);
         }
         return _temp2;
     }
@@ -91,13 +105,15 @@ function formatByType(data, type, scale, offset) {
     switch (type) {
         case 'date_time':
         case 'local_date_time':
-            return new Date(data * 1000 + 631065600000);
+            return new Date(data * 1000 + GarminTimeOffset);
         case 'sint32':
             return data * _fit.FIT.scConst;
+        case 'uint8':
         case 'sint16':
         case 'uint32':
         case 'uint16':
             return scale ? data / scale + offset : data;
+        case 'uint32_array':
         case 'uint16_array':
             return data.map(function (dataItem) {
                 return scale ? dataItem / scale + offset : dataItem;
@@ -107,23 +123,22 @@ function formatByType(data, type, scale, offset) {
                 return data;
             }
             // Quick check for a mask
-            var values = []
+            var values = [];
             for (var key in _fit.FIT.types[type]) {
                 if (_fit.FIT.types[type].hasOwnProperty(key)) {
-                    values.push(_fit.FIT.types[type][key])
+                    values.push(_fit.FIT.types[type][key]);
                 }
             }
-
-            if (values.indexOf('mask') === -1){
+            if (values.indexOf('mask') === -1) {
                 return _fit.FIT.types[type][data];
             }
             var dataItem = {};
             for (var key in _fit.FIT.types[type]) {
                 if (_fit.FIT.types[type].hasOwnProperty(key)) {
-                    if (_fit.FIT.types[type][key] === 'mask'){
-                        dataItem.value = data & key
-                    }else{
-                        dataItem[_fit.FIT.types[type][key]] = !!((data & key) >> 7) // Not sure if we need the >> 7 and casting to boolean but from all the masked props of fields so far this seems to be the case
+                    if (_fit.FIT.types[type][key] === 'mask') {
+                        dataItem.value = data & key;
+                    } else {
+                        dataItem[_fit.FIT.types[type][key]] = !!((data & key) >> 7); // Not sure if we need the >> 7 and casting to boolean but from all the masked props of fields so far this seems to be the case
                     }
                 }
             }
@@ -226,7 +241,15 @@ function readRecord(blob, messageTypes, developerFields, startIndex, options, st
     var recordHeader = blob[startIndex];
     var localMessageType = recordHeader & 15;
 
-    if ((recordHeader & 64) === 64) {
+    if ((recordHeader & CompressedHeaderMask) === CompressedHeaderMask) {
+        //compressed timestamp
+
+        var timeoffset = recordHeader & CompressedTimeMask;
+        timestamp += timeoffset - lastTimeOffset & CompressedTimeMask;
+        lastTimeOffset = timeoffset;
+
+        localMessageType = (recordHeader & CompressedLocalMesgNumMask) >> 5;
+    } else if ((recordHeader & 64) === 64) {
         // is definition message
         // startIndex + 1 is reserved
 
@@ -266,10 +289,11 @@ function readRecord(blob, messageTypes, developerFields, startIndex, options, st
             mTypeDef.fieldDefs.push(fDef);
         }
 
-        for (var _i4 = 0; _i4 < numberOfDeveloperDataFields; _i4++) {
+        // numberOfDeveloperDataFields = 0 so it wont crash here and wont loop
+        for (var _i5 = 0; _i5 < numberOfDeveloperDataFields; _i5++) {
             // If we fail to parse then try catch
             try {
-                var _fDefIndex = startIndex + 6 + numberOfFields * 3 + 1 + _i4 * 3;
+                var _fDefIndex = startIndex + 6 + numberOfFields * 3 + 1 + _i5 * 3;
 
                 var fieldNum = blob[_fDefIndex];
                 var size = blob[_fDefIndex + 1];
@@ -324,8 +348,8 @@ function readRecord(blob, messageTypes, developerFields, startIndex, options, st
     var fields = {};
     var message = (0, _messages.getFitMessage)(messageType.globalMessageNumber);
 
-    for (var _i5 = 0; _i5 < messageType.fieldDefs.length; _i5++) {
-        var _fDef2 = messageType.fieldDefs[_i5];
+    for (var _i6 = 0; _i6 < messageType.fieldDefs.length; _i6++) {
+        var _fDef2 = messageType.fieldDefs[_i6];
         var data = readData(blob, _fDef2, readDataFromIndex, options);
 
         if (!isInvalidValue(data, _fDef2.type)) {
@@ -362,6 +386,19 @@ function readRecord(blob, messageTypes, developerFields, startIndex, options, st
     if (message.name === 'field_description') {
         developerFields[fields.developer_data_index] = developerFields[fields.developer_data_index] || [];
         developerFields[fields.developer_data_index][fields.field_definition_number] = fields;
+    }
+
+    if (message.name === 'monitoring') {
+        //we need to keep the raw timestamp value so we can calculate subsequent timestamp16 fields
+        if (fields.timestamp) {
+            monitoring_timestamp = fields.timestamp;
+            fields.timestamp = new Date(fields.timestamp * 1000 + GarminTimeOffset);
+        }
+        if (fields.timestamp16 && !fields.timestamp) {
+            monitoring_timestamp += fields.timestamp16 - (monitoring_timestamp & 0xFFFF) & 0xFFFF;
+            //fields.timestamp = monitoring_timestamp;
+            fields.timestamp = new Date(monitoring_timestamp * 1000 + GarminTimeOffset);
+        }
     }
 
     var result = {
